@@ -1,0 +1,33 @@
+# TraceBill pricing rules, per tenant. Seeded; editable here (dashboard editor
+# is out of scope). Prices are integer micro-dollars (1,000,000 = $1).
+tenants:
+  astro-store:
+    currency: USD
+    skus:
+      # API call SKUs (default SKU is "<method>.<route>")
+      "get./api/products":
+        description: "Product catalog reads"
+        unit_price_micros: 2000        # $0.002 / call
+        free_units: 25                 # per period, per customer
+      "post./api/checkout":
+        description: "Checkout transactions"
+        unit_price_micros: 20000       # $0.02 / call
+        free_units: 0
+      "get./api/slow":
+        description: "Bulk export (slow path)"
+        unit_price_micros: 50000       # $0.05 / call
+        free_units: 0
+      default:
+        description: "API calls"
+        unit_price_micros: 1000        # $0.001 / call
+        free_units: 0
+    compute:
+      description: "Compute time"
+      price_micros_per_second: 30000   # $0.03 / compute-second
+    egress:
+      description: "Data egress"
+      price_micros_per_mb: 90000       # $0.09 / MB
+    quota:
+      calls_per_period: 400            # default per customer per period -> over_quota
+      per_customer:                    # optional overrides (demo: acme trips fast)
+        acme: 20
