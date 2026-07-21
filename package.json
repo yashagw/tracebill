@@ -1,0 +1,29 @@
+{
+  "name": "tracebill",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Usage-based billing for API companies, powered by the telemetry they already emit.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.5"
+  },
+  "workspaces": [
+    "sdk",
+    "gateway",
+    "app",
+    "demo"
+  ],
+  "scripts": {
+    "seed": "node scripts/seed.js",
+    "gateway": "node gateway/server.js",
+    "app": "node app/server.js",
+    "demo": "node demo/server.js",
+    "traffic": "node demo/traffic.js",
+    "test": "node --test test/unit-*.test.js",
+    "test:e2e": "node --test --test-timeout=600000 test/e2e.test.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "js-yaml": "^4.1.0"
+  }
+}

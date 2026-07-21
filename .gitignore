@@ -1,0 +1,15 @@
+node_modules/
+
+# Operator credentials and seeded secrets — never commit these.
+.env
+demo/.env
+.seed-secrets.json
+
+# Local SQLite database and WAL sidecars.
+data/
+
+# Test fixtures written at runtime.
+test/fixtures-pricing.yaml
+
+npm-debug.log*
+.DS_Store
