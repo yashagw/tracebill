@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Invoice · TraceBill</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230a0c10'/%3E%3Cpath d='M16 6l10 10-10 10L6 16z' fill='%234c8dff'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<div id="bar"></div>
+<div class="wrap">
+  <p><a href="/">← Dashboard</a></p>
+  <div id="main"><div class="empty">Loading…</div></div>
+</div>
+<script src="/assets/common.js"></script>
+<script src="/assets/invoice-view.js"></script>
+<script>
+const invoiceId = location.pathname.split('/').pop();
+let refreshTimer;
+
+async function load() {
+  const inv = await api(`/invoices/${invoiceId}`);
+  renderInvoice(document.getElementById('main'), inv, {
+    receiptsFetcher: (lineId, cursor) =>
+      api(`/invoices/${invoiceId}/lines/${lineId}/receipts?limit=100${cursor ? `&cursor=${cursor}` : ''}`),
+    traceFetcher: (traceId) => api(`/traces/${traceId}`),
+    onShare: async () => {
+      const { url } = await api(`/invoices/${invoiceId}/share`, { method: 'POST' });
+      const full = location.origin + url;
+      try { await navigator.clipboard.writeText(full); toast('Customer link copied — read-only invoice + receipts'); }
+      catch { prompt('Customer link (read-only):', full); }
+    },
+  });
+  if (inv.status === 'open' && !refreshTimer) {
+    refreshTimer = setInterval(async () => {
+      // Skip the refresh while a receipts panel is open, so it isn't clobbered.
+      if (!document.querySelector('#receipts-panel table')) load().catch(() => {});
+    }, 15000);
+  }
+}
+
+(async () => {
+  const me = await api('/me');
+  document.getElementById('bar').innerHTML = topbar('', me);
+  wireLogout();
+  await load();
+})();
+</script>
+</body>
+</html>
