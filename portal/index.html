@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dashboard · TraceBill</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230a0c10'/%3E%3Cpath d='M16 6l10 10-10 10L6 16z' fill='%234c8dff'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<div id="bar"></div>
+<div class="wrap">
+  <h1>Usage &amp; billing</h1>
+  <div id="hero" class="hero hidden"></div>
+  <div class="statrow" id="stats"></div>
+
+  <div class="chart-head"><h2>Calls by SKU — last hour</h2></div>
+  <div id="usage-chart" class="chart-card"><div class="empty">Loading…</div></div>
+
+  <div class="tape-head">
+    <h2>Live activity <span class="live-dot" title="streaming"></span></h2>
+    <span class="tape-meter" id="tape-meter"></span>
+  </div>
+  <div id="tape" class="tape"><div class="empty">Waiting for requests — billing streams in here live as your API is called.</div></div>
+
+  <h2>Customers — current period</h2>
+  <div class="cards" id="cards"><div class="empty">Loading…</div></div>
+  <div class="chart-head"><h2>Revenue by period</h2></div>
+  <div id="revenue-chart" class="chart-card"><div class="empty">Loading…</div></div>
+
+  <h2>Invoices</h2>
+  <div id="invoices"><div class="empty">Loading…</div></div>
+</div>
+<script src="/assets/common.js"></script>
+<script>
+let me;
+let periodEnd = 0;
+let clockRolled = false;
+
+// Counts down to period_end locally, without hitting the API every second.
+function tickClock() {
+  const el = document.getElementById('s-clock');
+  if (!el || !periodEnd) return;
+  const remaining = Math.round((periodEnd - Date.now()) / 1000);
+  if (remaining <= 0) {
+    el.textContent = 'closing…';
+    if (!clockRolled) { clockRolled = true; setTimeout(() => refresh().catch(() => {}), 1500); }
+    return;
+  }
+  clockRolled = false;
+  el.textContent = `${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, '0')}`;
+}
+
+async function refresh() {
+  const [{ customers, period }, { invoices }, summary] = await Promise.all([
+    api('/customers'), api('/invoices'), api('/summary'),
+  ]);
+  renderHero(summary);
+  const revenue = customers.reduce((s, c) => s + c.current_period.subtotal_cents, 0);
+  const calls = customers.reduce((s, c) => s + c.current_period.calls, 0);
+  periodEnd = period.end;
+  const remaining = Math.max(0, Math.round((period.end - Date.now()) / 1000));
+  const stats = document.getElementById('stats');
+  if (!stats.dataset.built) {
+    stats.dataset.built = '1';
+    stats.innerHTML = `
+      <div class="stat"><div class="label">Revenue this period</div><div class="value" id="s-rev">$0.00</div>
+        <div class="sub" id="s-rev-sub"></div></div>
+      <div class="stat"><div class="label">Billable calls this period</div><div class="value" id="s-calls">0</div>
+        <div class="sub" id="s-calls-sub"></div></div>
+      <div class="stat"><div class="label">Period closes in</div><div class="value" id="s-clock">–</div>
+        <div class="sub">invoices finalize automatically</div></div>`;
+  }
+  animateValue(document.getElementById('s-rev'), revenue, (v) => fmtMoney(Math.round(v)));
+  animateValue(document.getElementById('s-calls'), calls, (v) => Math.round(v).toLocaleString());
+  document.getElementById('s-rev-sub').textContent = fmtPeriod(period.start, period.end);
+  document.getElementById('s-calls-sub').textContent = `across ${customers.length} customers`;
+  document.getElementById('s-clock').textContent = `${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, '0')}`;
+
+  document.getElementById('cards').innerHTML = customers.length === 0
+    ? '<div class="empty">No customers seen yet — point your app at TraceBill and send traffic.</div>'
+    : customers.map((c) => `
+      <div class="card" data-id="${esc(c.id)}">
+        <div class="head">
+          <span class="name">${esc(c.display_name)}</span>
+          <span class="extid">${esc(c.external_id)}</span>
+          <span class="spacer" style="flex:1"></span>
+          ${c.anomaly ? `<span class="badge anomaly" title="running total is ${c.anomaly.factor}× this customer's average of prior periods (avg ${fmtMoney(c.anomaly.avg_cents)})"><span class="dot"></span>↑ ${c.anomaly.factor}× typical</span>` : ''}
+          ${c.enforced
+            ? '<span class="badge over" title="new requests from this customer are being 429\'d at the API edge"><span class="dot"></span>🚫 rate-limited</span>'
+            : '<span class="badge ok"><span class="dot"></span>within quota</span>'}
+        </div>
+        <div class="nums">
+          <div><div class="n">${c.current_period.calls.toLocaleString()}</div><div class="l">CALLS${c.quota ? ` / ${c.quota.toLocaleString()}` : ''}</div></div>
+          <div><div class="n">${fmtMoney(c.current_period.subtotal_cents)}</div><div class="l">RUNNING TOTAL</div></div>
+        </div>
+        ${c.quota ? `<div class="quota-bar"><div class="quota-fill ${c.enforced ? 'over' : ''}" style="width:${Math.min(100, Math.round((c.current_period.calls / c.quota) * 100))}%"></div></div>` : ''}
+        <div class="spark" id="spark-${esc(c.id)}"></div>
+        <div class="foot">${c.current_period.invoice_id
+          ? `<a href="/invoices/${esc(c.current_period.invoice_id)}">Open invoice →</a>`
+          : '<span class="note">no usage this period</span>'}</div>
+      </div>`).join('');
+
+  document.getElementById('invoices').innerHTML = invoices.length === 0
+    ? '<div class="empty">No invoices yet.</div>'
+    : `<table class="tb"><thead><tr>
+        <th>Customer</th><th>Period</th><th>Status</th><th>Verification</th><th class="num">Total</th>
+      </tr></thead><tbody>${invoices.map((i) => `
+        <tr class="clickable" onclick="location.href='/invoices/${esc(i.id)}'">
+          <td>${esc(i.customer_name)}</td>
+          <td>${fmtPeriod(i.period_start, i.period_end)}</td>
+          <td><span class="status-chip ${esc(i.status)}">${esc(i.status)}</span></td>
+          <td>${reconBadge({ status: i.reconciliation, note: i.reconciliation === 'warn' ? 'needs review' : '' })}</td>
+          <td class="num">${fmtMoney(i.subtotal_cents)}</td>
+        </tr>`).join('')}</tbody></table>`;
+
+  api('/usage/timeseries?window=1h&step=120s').then(({ series }) => {
+    stackedAreaChart(document.getElementById('usage-chart'), series);
+  }).catch(() => {});
+
+  api('/revenue/periods').then(({ periods }) => {
+    barChart(document.getElementById('revenue-chart'), periods.map((p) => ({ ...p })));
+  }).catch(() => {});
+
+  // One sparkline per customer card: their last hour of requests.
+  for (const c of customers) {
+    api(`/customers/${c.id}/usage?window=1h&step=120s`).then(({ series }) => {
+      const el = document.getElementById(`spark-${c.id}`);
+      if (!el) return;
+      const merged = new Map();
+      for (const s of series) for (const p of s.points) merged.set(p.ts, (merged.get(p.ts) || 0) + p.value);
+      const points = [...merged.entries()].sort((a, b) => a[0] - b[0]).map(([ts, value]) => ({ ts, value }));
+      el.innerHTML = points.length > 1 ? sparkline(points) : '<span class="note">requests over the last hour will chart here</span>';
+    }).catch(() => {});
+  }
+}
+
+function renderHero(s) {
+  const hero = document.getElementById('hero');
+  if (!s || s.charges === 0) { hero.classList.add('hidden'); return; }
+  hero.classList.remove('hidden');
+  const pct = s.verified_pct == null ? 100 : s.verified_pct;
+  const full = pct >= 99.95;
+  const warn = (s.invoices && s.invoices.warn) || 0;
+  if (!hero.dataset.built) {
+    hero.dataset.built = '1';
+    hero.innerHTML = `
+      <div class="hero-badge" id="hero-badge">✓</div>
+      <div class="hero-main">
+        <div class="hero-num"><span id="hero-pct">0</span>% <span class="hero-word">verified</span></div>
+        <div class="hero-sub" id="hero-sub"></div>
+      </div>
+      <div class="hero-side" id="hero-side"></div>`;
+  }
+  hero.classList.toggle('full', full);
+  hero.classList.toggle('partial', !full);
+  document.getElementById('hero-badge').textContent = full ? '✓' : '◑';
+  animateValue(document.getElementById('hero-pct'), Math.floor(pct), (v) => Math.round(v).toString());
+  document.getElementById('hero-sub').innerHTML =
+    `<b>${s.charges.toLocaleString()}</b> charges cross-checked against <b>${s.receipts.toLocaleString()}</b> span-level receipts from telemetry`;
+  document.getElementById('hero-side').innerHTML =
+    `<div class="hero-rev">${fmtMoney(s.total_revenue_cents)}</div><div class="hero-rev-l">billed all-time</div>` +
+    (warn ? `<div class="hero-warn">${warn} invoice${warn > 1 ? 's' : ''} need review</div>` : '');
+}
+
+// The tape polls a rolling window and dedupes by span_id. A moving cursor would
+// skip spans that only become queryable after some ingest lag.
+const TAPE_LOOKBACK_MS = 25 * 1000;
+let tapeSessionMicros = 0;
+let tapeSessionCount = 0;
+const tapeSeen = new Set();
+
+function tapeRow(e) {
+  const st = e.status_code;
+  const stCls = e.blocked ? 'err' : st == null ? '' : st >= 500 ? 'err' : st >= 400 ? 'warn' : 'ok';
+  const amt = e.blocked ? '<span class="t-blocked">🚫 $0.00</span>' : '+' + fmtMicros(e.amount_micros);
+  return `<div class="tape-row tape-in${e.blocked ? ' blocked' : ''}">
+    <span class="t-time">${fmtTime(e.ts)}</span>
+    <span class="t-cust">${esc(e.customer_name)}</span>
+    <span class="t-sku">${esc(e.sku)}</span>
+    <span class="t-code ${stCls}">${st == null ? '—' : st}</span>
+    <span class="t-dur">${e.duration_ms == null ? '' : e.duration_ms + ' ms'}</span>
+    <span class="t-amt">${amt}</span>
+  </div>`;
+}
+
+async function pollTape() {
+  let data;
+  try { data = await api(`/activity?since=${Date.now() - TAPE_LOOKBACK_MS}`); }
+  catch { return; }
+  const fresh = (data.events || []).filter((e) => e.span_id && !tapeSeen.has(e.span_id));
+  if (!fresh.length) return;
+  fresh.forEach((e) => tapeSeen.add(e.span_id));
+  if (tapeSeen.size > 4000) { tapeSeen.clear(); fresh.forEach((e) => tapeSeen.add(e.span_id)); }
+
+  const tape = document.getElementById('tape');
+  if (tape.querySelector('.empty')) tape.innerHTML = '';
+  tape.insertAdjacentHTML('afterbegin', fresh.map(tapeRow).join(''));
+  while (tape.children.length > 40) tape.removeChild(tape.lastChild);
+
+  for (const e of fresh) { if (!e.blocked) { tapeSessionMicros += e.amount_micros; tapeSessionCount++; } }
+  const meter = document.getElementById('tape-meter');
+  meter.innerHTML = `<strong id="tape-total">${fmtMicros(tapeSessionMicros)}</strong> metered from ${tapeSessionCount.toLocaleString()} requests`;
+  animateValue(document.getElementById('tape-total'), tapeSessionMicros, fmtMicros, 500);
+}
+
+(async () => {
+  me = await api('/me');
+  document.getElementById('bar').innerHTML = topbar('dash', me);
+  wireLogout();
+  await refresh();
+  setInterval(() => refresh().catch(() => {}), 15000);
+  setInterval(tickClock, 1000);
+  await pollTape();
+  setInterval(() => pollTape().catch(() => {}), 2000);
+})();
+</script>
+</body>
+</html>
