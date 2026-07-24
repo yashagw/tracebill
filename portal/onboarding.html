@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Setup · TraceBill</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230a0c10'/%3E%3Cpath d='M16 6l10 10-10 10L6 16z' fill='%234c8dff'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<div id="bar"></div>
+<div class="wrap">
+  <h1>You're three lines from metering</h1>
+  <p class="note" style="max-width:640px">TraceBill meters straight from your service's own request telemetry —
+  no event schema to design, no usage endpoints to call. Install the SDK, paste your key,
+  tell us who to bill for each request.</p>
+
+  <h2>1 · Install</h2>
+  <div class="codeblock">npm install @tracebill/node</div>
+
+  <h2>2 · Initialize (before your framework loads)</h2>
+  <div class="codeblock" id="snippet"></div>
+
+  <h2>3 · Send traffic</h2>
+  <p class="note">That's it — usage appears on your <a href="/">dashboard</a> within seconds,
+  and every invoice line item carries per-request receipts your customers can audit.</p>
+
+  <h2>Your ingest key</h2>
+  <p><span class="kbd" id="keyprefix">…</span>
+  <span class="note"> — full key shown once at creation. Need a new one?</span></p>
+  <div class="row-actions">
+    <button id="rotate" class="ghost">Rotate key</button>
+    <span class="note" id="rotate-note"></span>
+  </div>
+  <div class="codeblock" id="newkey" style="display:none"></div>
+</div>
+<script src="/assets/common.js"></script>
+<script>
+(async () => {
+  const me = await api('/me');
+  document.getElementById('bar').innerHTML = topbar('onboard', me);
+  wireLogout();
+  document.getElementById('keyprefix').textContent = me.ingest_key_prefix || 'no active key';
+  document.getElementById('snippet').textContent =
+`const tracebill = require('@tracebill/node');
+tracebill.init({
+  key: process.env.TRACEBILL_KEY,            // ${me.ingest_key_prefix || 'tb_live_…'}
+  identify: (req) => apiKeyToCustomer(req),  // who to bill for this request
+});`;
+  document.getElementById('rotate').addEventListener('click', async () => {
+    if (!confirm('Rotate ingest key? The old key stays valid for 60 seconds.')) return;
+    const r = await api('/ingest-keys/rotate', { method: 'POST' });
+    const el = document.getElementById('newkey');
+    el.style.display = 'block';
+    el.textContent = `TRACEBILL_KEY=${r.key}`;
+    document.getElementById('rotate-note').textContent = r.note;
+  });
+})();
+</script>
+</body>
+</html>
