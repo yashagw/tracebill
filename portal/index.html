@@ -11,7 +11,6 @@
 <div id="bar"></div>
 <div class="wrap">
   <h1>Usage &amp; billing</h1>
-  <div id="hero" class="hero hidden"></div>
   <div class="statrow" id="stats"></div>
 
   <div class="chart-head"><h2>Calls by SKU — last hour</h2></div>
@@ -52,10 +51,9 @@ function tickClock() {
 }
 
 async function refresh() {
-  const [{ customers, period }, { invoices }, summary] = await Promise.all([
-    api('/customers'), api('/invoices'), api('/summary'),
+  const [{ customers, period }, { invoices }] = await Promise.all([
+    api('/customers'), api('/invoices'),
   ]);
-  renderHero(summary);
   const revenue = customers.reduce((s, c) => s + c.current_period.subtotal_cents, 0);
   const calls = customers.reduce((s, c) => s + c.current_period.calls, 0);
   periodEnd = period.end;
@@ -133,34 +131,6 @@ async function refresh() {
       el.innerHTML = points.length > 1 ? sparkline(points) : '<span class="note">requests over the last hour will chart here</span>';
     }).catch(() => {});
   }
-}
-
-function renderHero(s) {
-  const hero = document.getElementById('hero');
-  if (!s || s.charges === 0) { hero.classList.add('hidden'); return; }
-  hero.classList.remove('hidden');
-  const pct = s.verified_pct == null ? 100 : s.verified_pct;
-  const full = pct >= 99.95;
-  const warn = (s.invoices && s.invoices.warn) || 0;
-  if (!hero.dataset.built) {
-    hero.dataset.built = '1';
-    hero.innerHTML = `
-      <div class="hero-badge" id="hero-badge">✓</div>
-      <div class="hero-main">
-        <div class="hero-num"><span id="hero-pct">0</span>% <span class="hero-word">verified</span></div>
-        <div class="hero-sub" id="hero-sub"></div>
-      </div>
-      <div class="hero-side" id="hero-side"></div>`;
-  }
-  hero.classList.toggle('full', full);
-  hero.classList.toggle('partial', !full);
-  document.getElementById('hero-badge').textContent = full ? '✓' : '◑';
-  animateValue(document.getElementById('hero-pct'), Math.floor(pct), (v) => Math.round(v).toString());
-  document.getElementById('hero-sub').innerHTML =
-    `<b>${s.charges.toLocaleString()}</b> charges cross-checked against <b>${s.receipts.toLocaleString()}</b> span-level receipts from telemetry`;
-  document.getElementById('hero-side').innerHTML =
-    `<div class="hero-rev">${fmtMoney(s.total_revenue_cents)}</div><div class="hero-rev-l">billed all-time</div>` +
-    (warn ? `<div class="hero-warn">${warn} invoice${warn > 1 ? 's' : ''} need review</div>` : '');
 }
 
 // The tape polls a rolling window and dedupes by span_id. A moving cursor would

@@ -167,6 +167,10 @@ services:
       - SEED_SECRETS_PATH=/data/seed-secrets.json
     volumes:
       - tracebill-data:/data
+      # Portal is served straight from the working tree, so HTML/CSS/JS edits show
+      # up on a browser refresh with no rebuild. The app sends no-cache for these.
+      - ./portal:/app/portal:ro
+      - ./pricing.yaml:/app/pricing.yaml:ro
     command: ["node", "scripts/docker-app.js"]
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "localhost:4500/healthz"]

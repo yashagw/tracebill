@@ -199,7 +199,7 @@ function stackedAreaChart(container, series, opts = {}) {
   const truncated = Math.max(0, s.length - SERIES_VARS.length);
   s = s.slice(0, SERIES_VARS.length);
   if (!s.length) {
-    container.innerHTML = '<div class="note" style="padding:28px 8px">No usage in this window yet — run <span class="kbd">npm run traffic</span>.</div>';
+    container.innerHTML = '<div class="note" style="padding:28px 8px">No usage in this window yet — calls will chart here as your API is used.</div>';
     return;
   }
   const ts = [...new Set(s.flatMap((x) => x.points.map((p) => p.ts)))].sort((a, b) => a - b);
@@ -280,23 +280,31 @@ function barChart(container, bars, opts = {}) {
   const maxV = Math.max(1, ...data.map((b) => b.cents));
   const n = data.length;
   const gap = 6;
-  const bw = Math.max(4, (iw - gap * (n - 1)) / n);
+  // Cap the width so a handful of periods still read as bars rather than as one
+  // slab filling the plot, and centre whatever group we end up with.
+  const bw = Math.min(56, Math.max(4, (iw - gap * (n - 1)) / n));
+  const groupW = n * bw + gap * (n - 1);
+  const x0 = pad.l + Math.max(0, (iw - groupW) / 2);
   const Y = (v) => pad.t + ih - (v / maxV) * ih;
   const gridVals = [0, maxV / 2, maxV];
   const grid = gridVals.map((v) => `<line class="ax-grid" x1="${pad.l}" y1="${Y(v).toFixed(1)}" x2="${W - pad.r}" y2="${Y(v).toFixed(1)}"></line>
     <text class="ax-lbl" x="${pad.l - 8}" y="${(Y(v) + 4).toFixed(1)}" text-anchor="end">${fmtMoney(Math.round(v))}</text>`).join('');
   const rects = data.map((b, i) => {
-    const x = pad.l + i * (bw + gap);
+    const x = x0 + i * (bw + gap);
     const h = Math.max(1, (b.cents / maxV) * ih);
     const y = pad.t + ih - h;
     const last = i === n - 1;
     return `<rect class="bar${last ? ' bar-latest' : ''}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="3" data-i="${i}"></rect>`;
   }).join('');
+  // One period gets a single label under its bar; "latest" only means something
+  // once there is more than one.
+  const xlabels = n === 1
+    ? `<text class="ax-lbl" x="${(x0 + bw / 2).toFixed(1)}" y="${H - 7}" text-anchor="middle">${fmtTime(data[0].period_start)}</text>`
+    : `<text class="ax-lbl" x="${x0.toFixed(1)}" y="${H - 7}" text-anchor="start">${fmtTime(data[0].period_start)}</text>
+       <text class="ax-lbl" x="${(x0 + groupW).toFixed(1)}" y="${H - 7}" text-anchor="end">latest</text>`;
   container.innerHTML = `<div class="chart-plot" style="position:relative">
     <svg width="100%" viewBox="0 0 ${W} ${H}" role="img" aria-label="revenue by period" style="display:block">
-      ${grid}${rects}
-      <text class="ax-lbl" x="${pad.l}" y="${H - 7}" text-anchor="start">${fmtTime(data[0].period_start)}</text>
-      <text class="ax-lbl" x="${W - pad.r}" y="${H - 7}" text-anchor="end">latest</text>
+      ${grid}${rects}${xlabels}
     </svg>
     <div class="chart-tip" style="opacity:0"></div></div>`;
   const tip = container.querySelector('.chart-tip');
