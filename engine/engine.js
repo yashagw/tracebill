@@ -166,9 +166,7 @@ class Engine {
     }
 
     // A full-period pull plus INSERT OR IGNORE is both exact and replay-safe.
-    // engine_cursors only records how far the pull got, for debugging.
     const spans = await this.signoz.billableSpans(tenantId, period.start, period.end);
-    let lastTs = 0;
     for (const s of spans) {
       const invoice = invoiceByCustomerExt[s.customer];
       if (!invoice || !s.span_id || !s.sku) continue;
@@ -181,15 +179,6 @@ class Engine {
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(lineId, s.trace_id, s.span_id, s.ts, s.route, s.duration_ms, s.status_code, s.bytes);
-      if (s.ts > lastTs) lastTs = s.ts;
-    }
-    if (lastTs > 0) {
-      this.db
-        .prepare(
-          `INSERT INTO engine_cursors (tenant_id, customer_id, last_receipt_ts) VALUES (?, '_all', ?)
-           ON CONFLICT(tenant_id, customer_id) DO UPDATE SET last_receipt_ts = MAX(last_receipt_ts, excluded.last_receipt_ts)`
-        )
-        .run(tenantId, lastTs);
     }
   }
 
