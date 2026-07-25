@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<!--
+  Dropped into ClickHouse's config.d/ alongside the image's stock config.
+  SigNoz's schema migrator creates replicated tables on a cluster named
+  "cluster", so both the ZooKeeper node and that cluster have to be defined.
+  One shard, one replica — enough for a single-node demo.
+-->
+<clickhouse>
+    <zookeeper>
+        <node index="1">
+            <host>zookeeper</host>
+            <port>2181</port>
+        </node>
+    </zookeeper>
+    <remote_servers>
+        <cluster>
+            <shard>
+                <replica>
+                    <host>clickhouse</host>
+                    <port>9000</port>
+                </replica>
+            </shard>
+        </cluster>
+    </remote_servers>
+    <macros>
+        <shard>01</shard>
+        <replica>replica-1</replica>
+    </macros>
+</clickhouse>

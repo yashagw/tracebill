@@ -1,0 +1,10 @@
+node_modules
+**/node_modules
+.git
+.env
+demo/.env
+.seed-secrets.json
+data
+docs
+.DS_Store
+npm-debug.log*

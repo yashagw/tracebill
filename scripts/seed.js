@@ -69,7 +69,9 @@ function main() {
     ingest_key: key,
     second_tenant: { id: TENANT_2_ID, login: { email: 'ops@globexlabs.dev', password: founder2Password }, ingest_key: key2 },
   };
-  fs.writeFileSync(path.join(cfg.ROOT, '.seed-secrets.json'), JSON.stringify(secrets, null, 2));
+  const secretsPath = cfg.env('SEED_SECRETS_PATH', path.join(cfg.ROOT, '.seed-secrets.json'));
+  fs.mkdirSync(path.dirname(secretsPath), { recursive: true });
+  fs.writeFileSync(secretsPath, JSON.stringify(secrets, null, 2), { mode: 0o600 });
 
   console.log('Seeded TraceBill.');
   console.log('');
@@ -78,7 +80,7 @@ function main() {
   console.log(`  Ingest key:    ${key}   (Astro Store — shown once)`);
   console.log(`  2nd tenant:    ops@globexlabs.dev / ${founder2Password} (isolation check)`);
   console.log('');
-  console.log('  Copies written to demo/.env and .seed-secrets.json.');
+  console.log(`  Copies written to demo/.env and ${secretsPath}.`);
 }
 
 main();

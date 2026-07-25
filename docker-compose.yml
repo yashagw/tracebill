@@ -1,0 +1,200 @@
+# TraceBill, plus the SigNoz stack it uses as its internal telemetry store.
+#
+#   docker compose up -d          # everything
+#   docker compose logs -f app    # portal + engine
+#
+# Portal is on http://localhost:4500, demo API on :3002. SigNoz's own UI is on
+# :8080 — it is TraceBill's backend, not a tenant-facing surface.
+
+name: tracebill
+
+services:
+  # ---------- SigNoz: internal telemetry store ----------
+
+  zookeeper:
+    image: signoz/zookeeper:3.7.1
+    container_name: tb-zookeeper
+    user: root
+    environment:
+      - ZOO_SERVER_ID=1
+      - ALLOW_ANONYMOUS_LOGIN=yes
+      - ZOO_AUTOPURGE_INTERVAL=1
+    volumes:
+      - zookeeper:/bitnami/zookeeper
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -m 2 http://localhost:8080/commands/ruok | grep error | grep null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.12.5
+    container_name: tb-clickhouse
+    tty: true
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      - CLICKHOUSE_SKIP_USER_SETUP=1
+    volumes:
+      # Stock image config plus one cluster definition in config.d.
+      - ./docker/clickhouse-cluster.xml:/etc/clickhouse-server/config.d/cluster.xml:ro
+      - clickhouse:/var/lib/clickhouse/
+    ulimits:
+      nproc: 65535
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "0.0.0.0:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+    restart: unless-stopped
+
+  # Creates the signoz_* databases and tables, then exits.
+  schema-migrator:
+    image: signoz/signoz-otel-collector:v0.144.6
+    container_name: tb-schema-migrator
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    environment:
+      - SIGNOZ_OTEL_COLLECTOR_CLICKHOUSE_DSN=tcp://clickhouse:9000
+      - SIGNOZ_OTEL_COLLECTOR_CLICKHOUSE_CLUSTER=cluster
+      - SIGNOZ_OTEL_COLLECTOR_CLICKHOUSE_REPLICATION=true
+      - SIGNOZ_OTEL_COLLECTOR_TIMEOUT=10m
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        /signoz-otel-collector migrate bootstrap &&
+        /signoz-otel-collector migrate sync up &&
+        /signoz-otel-collector migrate async up
+    restart: on-failure
+
+  signoz:
+    image: signoz/signoz:v0.134.0
+    container_name: tb-signoz
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      schema-migrator:
+        condition: service_completed_successfully
+    ports:
+      - "8080:8080"
+    environment:
+      - SIGNOZ_ALERTMANAGER_PROVIDER=signoz
+      - SIGNOZ_TELEMETRYSTORE_CLICKHOUSE_DSN=tcp://clickhouse:9000
+      - SIGNOZ_SQLSTORE_SQLITE_PATH=/var/lib/signoz/signoz.db
+      - SIGNOZ_TOKENIZER_JWT_SECRET=${SIGNOZ_JWT_SECRET:-tracebill-local-jwt-secret}
+    volumes:
+      - signoz-sqlite:/var/lib/signoz/
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "localhost:8080/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+    restart: unless-stopped
+
+  otel-collector:
+    image: signoz/signoz-otel-collector:v0.144.6
+    container_name: tb-otel-collector
+    depends_on:
+      schema-migrator:
+        condition: service_completed_successfully
+      signoz:
+        condition: service_healthy
+    environment:
+      - OTEL_RESOURCE_ATTRIBUTES=host.name=tracebill-host,os.type=linux
+      - LOW_CARDINAL_EXCEPTION_GROUPING=false
+      - SIGNOZ_OTEL_COLLECTOR_CLICKHOUSE_DSN=tcp://clickhouse:9000
+      - SIGNOZ_OTEL_COLLECTOR_CLICKHOUSE_CLUSTER=cluster
+      - SIGNOZ_OTEL_COLLECTOR_CLICKHOUSE_REPLICATION=true
+      - SIGNOZ_OTEL_COLLECTOR_TIMEOUT=10m
+    volumes:
+      - ./docker/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        /signoz-otel-collector migrate sync check &&
+        /signoz-otel-collector --config=/etc/otel-collector-config.yaml
+    restart: unless-stopped
+
+  # ---------- TraceBill ----------
+
+  # Claims the first-user slot on a fresh SigNoz and writes the operator
+  # credentials onto the shared volume. Idempotent; exits when done.
+  bootstrap:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: tracebill:local
+    container_name: tb-bootstrap
+    depends_on:
+      signoz:
+        condition: service_healthy
+    environment:
+      - SIGNOZ_URL=http://signoz:8080
+      - SIGNOZ_BOOTSTRAP_EMAIL=${SIGNOZ_BOOTSTRAP_EMAIL:-ops@tracebill.local}
+      - SIGNOZ_BOOTSTRAP_PASSWORD=${SIGNOZ_BOOTSTRAP_PASSWORD:-TraceBillLocal!2026}
+    volumes:
+      - tracebill-data:/data
+    command: ["node", "scripts/bootstrap-signoz.js"]
+    restart: on-failure
+
+  # Gateway and app share one SQLite file, so they share a container.
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: tracebill:local
+    container_name: tb-app
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      otel-collector:
+        condition: service_started
+    ports:
+      - "4400:4400"
+      - "4500:4500"
+    environment:
+      - SIGNOZ_URL=http://signoz:8080
+      - SIGNOZ_OTLP=http://otel-collector:4318
+      - SHARE_TOKEN_SECRET=${SHARE_TOKEN_SECRET:-tracebill-local-share-secret}
+      - TRACEBILL_WEBHOOK_SECRET=${TRACEBILL_WEBHOOK_SECRET:-tracebill-local-webhook-secret}
+      - PERIOD_MINUTES=${PERIOD_MINUTES:-5}
+      - SEED_SECRETS_PATH=/data/seed-secrets.json
+    volumes:
+      - tracebill-data:/data
+    command: ["node", "scripts/docker-app.js"]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "localhost:4500/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+    restart: unless-stopped
+
+  # The demo tenant. Talks to the gateway over HTTP only, no database access.
+  demo:
+    image: tracebill:local
+    container_name: tb-demo
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "3002:3002"
+    environment:
+      - TRACEBILL_ENDPOINT=http://app:4400/v1/traces
+      - PORT=3002
+      - SEED_SECRETS_PATH=/data/seed-secrets.json
+    volumes:
+      - tracebill-data:/data:ro
+    command: ["node", "scripts/docker-demo.js"]
+    restart: unless-stopped
+
+volumes:
+  clickhouse:
+  zookeeper:
+  signoz-sqlite:
+  tracebill-data:

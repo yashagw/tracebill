@@ -3,7 +3,8 @@
  * so the demo needs one terminal instead of three. Ctrl-C stops all of them.
  *
  *   npm run dev
- *   npm run dev -- --traffic     # also start continuous demo traffic
+ *   npm run dev -- --traffic            # also start continuous demo traffic
+ *   npm run dev -- --only=gateway,app   # a subset (the Docker image uses this)
  */
 'use strict';
 
@@ -16,11 +17,23 @@ const COLORS = { gateway: '\x1b[35m', app: '\x1b[36m', demo: '\x1b[33m', traffic
 const RESET = '\x1b[0m';
 const WIDTH = 8;
 
-const procs = [
+const ALL = [
   { name: 'gateway', script: 'gateway/server.js' },
   { name: 'app', script: 'app/server.js' },
   { name: 'demo', script: 'demo/server.js' },
 ];
+
+const onlyArg = process.argv.find((a) => a.startsWith('--only='));
+const only = onlyArg ? onlyArg.slice('--only='.length).split(',').map((s) => s.trim()).filter(Boolean) : null;
+if (only) {
+  const unknown = only.filter((n) => !ALL.some((p) => p.name === n));
+  if (unknown.length) {
+    console.error(`unknown process in --only: ${unknown.join(', ')} (known: ${ALL.map((p) => p.name).join(', ')})`);
+    process.exit(1);
+  }
+}
+
+const procs = only ? ALL.filter((p) => only.includes(p.name)) : ALL.slice();
 if (process.argv.includes('--traffic')) {
   procs.push({ name: 'traffic', script: 'demo/traffic.js', delayMs: 3000 });
 }

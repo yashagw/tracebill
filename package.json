@@ -16,6 +16,7 @@
   "scripts": {
     "seed": "node scripts/seed.js",
     "dev": "node scripts/dev.js",
+    "signoz:bootstrap": "node scripts/bootstrap-signoz.js",
     "gateway": "node gateway/server.js",
     "app": "node app/server.js",
     "demo": "node demo/server.js",
