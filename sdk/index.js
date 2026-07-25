@@ -24,6 +24,13 @@ const { deriveSku, normalizePath } = require('./sku');
 
 let _sdk = null;
 
+// Enforcement state, populated by init() and read by guard().
+let _key = null;
+let _identify = null;
+let _enforceBase = null;
+let _blocked = new Set();
+let _enforceTimer = null;
+
 function safeCall(fn, req) {
   if (typeof fn !== 'function') return undefined;
   try {
@@ -48,6 +55,10 @@ function init(opts = {}) {
     throw new Error('tracebill.init: `identify` is required — a function (req) => customerId');
   }
 
+  _key = key;
+  _identify = identify;
+  _enforceBase = endpoint.replace(/\/v1\/traces\/?$/, '');
+
   const exporter = new OTLPTraceExporter({
     url: endpoint,
     headers: { 'X-TraceBill-Key': key },
@@ -57,6 +68,19 @@ function init(opts = {}) {
     try {
       // Only inbound server requests; an IncomingMessage has .headers and .url.
       if (!request || typeof request.url !== 'string' || !request.headers) return;
+      // Refused requests carry a separate blocked-customer attribute rather than
+      // billing.customer_id, so metering skips them but the dashboard can show them.
+      if (request._tbBlocked) {
+        span.setAttribute('billing.blocked', true);
+        const blockedCustomer = safeCall(identify, request);
+        if (blockedCustomer !== null && blockedCustomer !== undefined && blockedCustomer !== '') {
+          span.setAttribute('billing.blocked_customer_id', String(blockedCustomer));
+        }
+        const route =
+          (span.attributes && (span.attributes['http.route'] || span.attributes['http.target'])) || request.url;
+        span.setAttribute('billing.sku', String(safeCall(sku, request) || deriveSku(request.method, route)));
+        return;
+      }
       const customer = safeCall(identify, request);
       if (customer !== null && customer !== undefined && customer !== '') {
         span.setAttribute('billing.customer_id', String(customer));
@@ -104,7 +128,50 @@ function init(opts = {}) {
   return _sdk;
 }
 
+// Optional middleware that 429s customers TraceBill has flagged over quota.
+// Add with app.use(tracebill.guard()).
+function guard({ pollMs = 5000, status = 429, message = 'Usage quota exceeded for this billing period.' } = {}) {
+  startEnforcePolling(pollMs);
+  return (req, res, next) => {
+    try {
+      const customer = safeCall(_identify, req);
+      if (customer !== null && customer !== undefined && customer !== '' && _blocked.has(String(customer))) {
+        req._tbBlocked = true; // attachBilling reads this and skips billing the call
+        res.status(status).set('Retry-After', '60').json({
+          error: { code: 'quota_exceeded', message },
+        });
+        return;
+      }
+    } catch {
+      /* never break the request path */
+    }
+    next();
+  };
+}
+
+function startEnforcePolling(pollMs) {
+  if (_enforceTimer || !_enforceBase || !_key) return;
+  const poll = async () => {
+    try {
+      const r = await fetch(`${_enforceBase}/enforce`, { headers: { 'X-TraceBill-Key': _key } });
+      if (r.ok) {
+        const d = await r.json();
+        _blocked = new Set((d.blocked || []).map(String));
+      }
+    } catch {
+      /* keep last-known verdict on transient errors */
+    }
+  };
+  poll();
+  _enforceTimer = setInterval(poll, pollMs);
+  if (_enforceTimer.unref) _enforceTimer.unref();
+}
+
 async function shutdown() {
+  if (_enforceTimer) {
+    clearInterval(_enforceTimer);
+    _enforceTimer = null;
+  }
   if (_sdk) {
     const s = _sdk;
     _sdk = null;
@@ -116,4 +183,4 @@ async function shutdown() {
   }
 }
 
-module.exports = { init, shutdown, deriveSku, normalizePath };
+module.exports = { init, guard, shutdown, deriveSku, normalizePath };

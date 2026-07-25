@@ -26,6 +26,7 @@ const express = require('express');
 
 const app = express();
 app.use(express.json());
+app.use(tracebill.guard()); // 429 customers TraceBill has flagged over quota
 const PORT = process.env.PORT || process.env.DEMO_PORT || 3002;
 
 const PRODUCTS = [

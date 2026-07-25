@@ -66,6 +66,16 @@ function createServer({ dbPath = cfg.DB_PATH, upstream = UPSTREAM } = {}) {
     }
   });
 
+  // Over-quota customers for this key's tenant. The SDK's guard() polls this.
+  app.get('/enforce', (req, res) => {
+    const tenantId = keys.resolveTenant(req.get('X-TraceBill-Key'));
+    if (!tenantId) return res.status(401).json({ error: { code: 'unauthorized', message: 'unknown or revoked ingest key' } });
+    const rows = db
+      .prepare("SELECT external_id FROM customers WHERE tenant_id = ? AND quota_status = 'over'")
+      .all(tenantId);
+    res.json({ blocked: rows.map((r) => r.external_id) });
+  });
+
   app.get('/healthz', async (req, res) => {
     let upstreamOk = false;
     try {
