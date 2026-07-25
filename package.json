@@ -15,6 +15,7 @@
   ],
   "scripts": {
     "seed": "node scripts/seed.js",
+    "dev": "node scripts/dev.js",
     "gateway": "node gateway/server.js",
     "app": "node app/server.js",
     "demo": "node demo/server.js",
