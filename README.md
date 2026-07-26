@@ -72,11 +72,23 @@ of the requests underneath it.
 To stop, `docker compose down` — or `docker compose down -v` to also throw away the
 data and start fresh.
 
-## Pricing rules
+## Pricing and contracts
 
-Prices live in [`pricing.yaml`](pricing.yaml) — per-endpoint rates, free tiers,
-compute and bandwidth, and per-customer quotas. Edit it and the change applies on
-the next billing cycle.
+Prices live in [`pricing.yaml`](pricing.yaml): per-endpoint rates, free tiers,
+compute, bandwidth and quotas.
+
+Each customer can have their own contract, which overrides part of the default
+price list and inherits the rest — so you can give one customer a volume rate on a
+single endpoint without restating everything else. In the demo, Acme is on an
+enterprise rate with a larger free tier, Initech has a discount on checkout only,
+and Globex pays list price. Their three invoices show three different sets of
+numbers for the same traffic.
+
+Edits apply on the next billing cycle. Closed invoices keep the price they were
+billed at.
+
+> Contracts are configured in this file. There is no pricing UI, and tenants can't
+> edit their own rates — that isn't built yet.
 
 ## More
 

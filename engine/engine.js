@@ -11,7 +11,7 @@
 'use strict';
 
 const { sha256, newId } = require('../lib/ids');
-const { computeLines, subtotalCents, totalCalls, loadPricing } = require('../lib/pricing');
+const { computeLines, subtotalCents, totalCalls, loadPricing, resolvePricing, quotaFor } = require('../lib/pricing');
 
 class ClosedInvoiceError extends Error {
   constructor(invoiceId) {
@@ -149,9 +149,8 @@ class Engine {
       this.writeLines(invoice, lines);
       invoiceByCustomerExt[customerExt] = invoice;
 
-      // Quota for this period only; a per-customer override beats the default.
-      const q = pricing.quota || {};
-      const quota = (q.per_customer && q.per_customer[customerExt]) ?? q.calls_per_period;
+      // Quota for this period only, from the customer's own contract.
+      const quota = quotaFor(resolvePricing(pricing, customerExt));
       if (quota && totalCalls(lines) > quota) overIds.push(customer.id);
     }
 

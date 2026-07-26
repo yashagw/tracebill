@@ -68,6 +68,32 @@ Four properties the rest of the system leans on:
 Each invoice carries a reconciliation badge comparing the metered aggregate
 against the span-level receipts actually on file.
 
+## Pricing and contracts
+
+`pricing.yaml` holds a default price book per tenant, plus optional per-customer
+contracts under `customers.<external_id>`. `resolvePricing(tenantPricing, customer)`
+layers one over the other:
+
+- **`skus`** merge key by key, so a contract can reprice a single endpoint and
+  inherit every other rate, including the `default` catch-all;
+- **`compute`**, **`egress`**, **`currency`** and **`quota`** replace wholesale when
+  the contract names them;
+- a customer with no contract gets the tenant defaults unchanged.
+
+The older `quota.per_customer.<id>` shape still works and is folded into the
+resolved quota, with a real contract taking precedence over it.
+
+Resolution happens per customer inside `computeLines`, so one meter pass can bill
+several customers at different rates from the same usage aggregate. `spanCostMicros`
+takes an already-resolved price book; the activity feed resolves once per customer
+and caches, rather than once per span.
+
+Two consequences worth knowing. Every invoice line stores the
+`unit_price_micros` it billed at, so editing the file never rewrites a closed
+invoice. But prices are not effective-dated, so an edit mid-period does reprice the
+**open** invoice on the next meter pass — a real product would version rates and
+apply them from a date forward.
+
 ## Quota enforcement
 
 When a customer passes their `calls_per_period`, the engine flags them. The SDK's
@@ -151,7 +177,10 @@ Known limitations:
   alert rule (see above).
 - The engine authenticates with a session JWT rather than a token, because this
   SigNoz build cannot mint one (see above).
-- Pricing is edited in `pricing.yaml`; there is no pricing UI.
+- Per-customer contracts are config only. They resolve and bill correctly, but
+  there is no pricing editor and no way for a tenant to change their own rates —
+  that isn't built as a product feature yet. Rates are also not effective-dated
+  (see above).
 - No payments, tax or currency handling, tenant self-serve signup, or historical
   backfill.
 - The SDK ships an Express convention for other frameworks and a

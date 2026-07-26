@@ -11,7 +11,7 @@ const { Engine } = require('../engine/engine');
 const { SignozClient } = require('../engine/signoz');
 const { RateLimiter } = require('../lib/ratelimit');
 const { sha256, newIngestKey } = require('../lib/ids');
-const { loadPricing, spanCostMicros } = require('../lib/pricing');
+const { loadPricing, spanCostMicros, resolvePricing, quotaFor } = require('../lib/pricing');
 
 const SHARE_SECRET_FALLBACK = 'tracebill-share-secret';
 
@@ -115,7 +115,8 @@ function createApp({ dbPath = cfg.DB_PATH, signoz, engineOpts = {} } = {}) {
     if (!rawSpans || !rawSpans.length) return null;
     const billed = rawSpans.find((s) => s.tags && s.tags['billing.sku']);
     if (!billed) return null;
-    const pricing = engine.pricingFor(tenantId);
+    // Priced against the contract of whoever the request was billed to.
+    const pricing = resolvePricing(engine.pricingFor(tenantId), billed.tags['billing.customer_id']);
     const c = spanCostMicros(pricing, {
       sku: billed.tags['billing.sku'],
       durationNs: billed.duration_ns,
@@ -242,7 +243,6 @@ function createApp({ dbPath = cfg.DB_PATH, signoz, engineOpts = {} } = {}) {
     const period = engine.periodFor(Date.now());
     const tenantPricing = loadPricing(cfg.PRICING_PATH)[req.tenantId];
     const quotaCfg = (tenantPricing && tenantPricing.quota) || {};
-    const quotaFor = (ext) => (quotaCfg.per_customer && quotaCfg.per_customer[ext]) ?? quotaCfg.calls_per_period ?? null;
     const customers = db
       .prepare('SELECT * FROM customers WHERE tenant_id = ? ORDER BY external_id')
       .all(req.tenantId)
@@ -270,7 +270,7 @@ function createApp({ dbPath = cfg.DB_PATH, signoz, engineOpts = {} } = {}) {
           external_id: c.external_id,
           display_name: c.display_name || c.external_id,
           quota_status: c.quota_status,
-          quota: quotaFor(c.external_id),
+          quota: quotaFor(resolvePricing(tenantPricing, c.external_id)),
           enforced: c.quota_status === 'over',
           anomaly,
           current_period: {
@@ -321,14 +321,20 @@ function createApp({ dbPath = cfg.DB_PATH, signoz, engineOpts = {} } = {}) {
         sz.billableSpans(req.tenantId, queryStart, now, { pageSize: 1000, maxPages: 3 }),
         sz.blockedSpans(req.tenantId, queryStart, now),
       ]);
-      const pricing = engine.pricingFor(req.tenantId);
+      const tenantPricing = engine.pricingFor(req.tenantId);
+      // One resolve per customer, not per span — a busy period is thousands of spans.
+      const contracts = new Map();
+      const pricingFor = (customerExt) => {
+        if (!contracts.has(customerExt)) contracts.set(customerExt, resolvePricing(tenantPricing, customerExt));
+        return contracts.get(customerExt);
+      };
       const names = new Map(
         db.prepare('SELECT external_id, display_name FROM customers WHERE tenant_id = ?')
           .all(req.tenantId)
           .map((c) => [c.external_id, c.display_name || c.external_id])
       );
       const billed = spans.filter((s) => s.ts > since && s.span_id).map((s) => {
-        const cost = spanCostMicros(pricing, { sku: s.sku, durationNs: (s.duration_ms || 0) * 1e6, bytes: s.bytes || 0 });
+        const cost = spanCostMicros(pricingFor(s.customer), { sku: s.sku, durationNs: (s.duration_ms || 0) * 1e6, bytes: s.bytes || 0 });
         return {
           span_id: s.span_id, trace_id: s.trace_id, ts: s.ts,
           customer: s.customer, customer_name: names.get(s.customer) || s.customer,

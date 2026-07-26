@@ -5,7 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { amountCents, freeApplied, formatCents } = require('../lib/money');
-const { computeLines, loadPricing, subtotalCents, totalCalls } = require('../lib/pricing');
+const { computeLines, loadPricing, subtotalCents, totalCalls, resolvePricing, quotaFor } = require('../lib/pricing');
 
 test('amountCents: basic unit pricing, integer only', () => {
   // 30 calls at $0.002 = $0.06
@@ -107,4 +107,93 @@ test('pricing.yaml parses and covers the demo tenant', () => {
   assert.ok(p['astro-store']);
   assert.ok(p['astro-store'].skus['get./api/products'].unit_price_micros > 0);
   assert.ok(Number.isInteger(p['astro-store'].skus['get./api/products'].unit_price_micros));
+});
+
+// ---------- per-customer contracts ----------
+
+const CONTRACTS = {
+  skus: {
+    'get./x': { description: 'Reads', unit_price_micros: 2000, free_units: 25 },
+    'post./y': { description: 'Writes', unit_price_micros: 20000, free_units: 0 },
+    default: { description: 'API calls', unit_price_micros: 1000, free_units: 0 },
+  },
+  compute: { price_micros_per_second: 30000 },
+  egress: { price_micros_per_mb: 90000 },
+  quota: { calls_per_period: 400 },
+  customers: {
+    big: {
+      skus: { 'get./x': { description: 'Reads (enterprise)', unit_price_micros: 1200, free_units: 100 } },
+      compute: { price_micros_per_second: 20000 },
+      quota: { calls_per_period: 20 },
+    },
+  },
+};
+
+test('resolvePricing: a contract overrides only what it names', () => {
+  const big = resolvePricing(CONTRACTS, 'big');
+  // repriced
+  assert.strictEqual(big.skus['get./x'].unit_price_micros, 1200);
+  assert.strictEqual(big.skus['get./x'].free_units, 100);
+  assert.strictEqual(big.compute.price_micros_per_second, 20000);
+  assert.strictEqual(quotaFor(big), 20);
+  // inherited from the tenant default price book
+  assert.strictEqual(big.skus['post./y'].unit_price_micros, 20000);
+  assert.strictEqual(big.skus.default.unit_price_micros, 1000);
+  assert.strictEqual(big.egress.price_micros_per_mb, 90000);
+  // the contract list itself never leaks into a resolved book
+  assert.strictEqual(big.customers, undefined);
+});
+
+test('resolvePricing: a customer with no contract gets tenant defaults', () => {
+  const small = resolvePricing(CONTRACTS, 'small');
+  assert.strictEqual(small.skus['get./x'].unit_price_micros, 2000);
+  assert.strictEqual(small.compute.price_micros_per_second, 30000);
+  assert.strictEqual(quotaFor(small), 400);
+});
+
+test('resolvePricing: the older quota.per_customer shape still applies', () => {
+  const legacy = { skus: { default: { unit_price_micros: 1000 } }, quota: { calls_per_period: 400, per_customer: { acme: 20 } } };
+  assert.strictEqual(quotaFor(resolvePricing(legacy, 'acme')), 20);
+  assert.strictEqual(quotaFor(resolvePricing(legacy, 'other')), 400);
+  // and a real contract wins over it
+  const both = { ...legacy, customers: { acme: { quota: { calls_per_period: 50 } } } };
+  assert.strictEqual(quotaFor(resolvePricing(both, 'acme')), 50);
+  // per_customer is an input, never part of a resolved book
+  assert.strictEqual(resolvePricing(legacy, 'acme').quota.per_customer, undefined);
+});
+
+test('computeLines bills each customer against their own contract', () => {
+  const usage = [
+    { customer: 'big', sku: 'get./x', calls: 200, compute_ns: 1000000000, egress_bytes: 0 },
+    { customer: 'small', sku: 'get./x', calls: 200, compute_ns: 1000000000, egress_bytes: 0 },
+  ];
+  const lines = computeLines(CONTRACTS, usage);
+
+  // big: 200 calls, 100 free -> 100 * $0.0012 = $0.12
+  const bigCall = lines.big.find((l) => l.sku === 'get./x');
+  assert.strictEqual(bigCall.unit_price_micros, 1200);
+  assert.strictEqual(bigCall.free_units_applied, 100);
+  assert.strictEqual(bigCall.amount_cents, 12);
+
+  // small: 200 calls, 25 free -> 175 * $0.002 = $0.35
+  const smallCall = lines.small.find((l) => l.sku === 'get./x');
+  assert.strictEqual(smallCall.unit_price_micros, 2000);
+  assert.strictEqual(smallCall.free_units_applied, 25);
+  assert.strictEqual(smallCall.amount_cents, 35);
+
+  // same second of compute, different negotiated rate
+  assert.strictEqual(lines.big.find((l) => l.sku === '_compute').amount_cents, 2);
+  assert.strictEqual(lines.small.find((l) => l.sku === '_compute').amount_cents, 3);
+});
+
+test('demo pricing.yaml gives acme a contract and leaves globex on defaults', () => {
+  const tenant = loadPricing(path.join(__dirname, '..', 'pricing.yaml'))['astro-store'];
+  const acme = resolvePricing(tenant, 'acme');
+  const globex = resolvePricing(tenant, 'globex');
+  assert.ok(acme.skus['get./api/products'].unit_price_micros < globex.skus['get./api/products'].unit_price_micros);
+  assert.ok(quotaFor(acme) < quotaFor(globex));
+  assert.strictEqual(
+    globex.skus['get./api/products'].unit_price_micros,
+    tenant.skus['get./api/products'].unit_price_micros
+  );
 });
